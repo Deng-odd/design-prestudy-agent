@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "design-prestudy-agent"
+version = "0.1.0"
+description = "城市设计项目前期研究 Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.65.0,<1.66",
+    "openai>=2.44.0,<2.45",
+    "langgraph>=1.2.12,<1.3",
+    "tavily-python>=0.8.4,<0.9",
+    "pydantic>=2,<3",
+    "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*", "evals"]
+namespaces = false
+
+[tool.setuptools.package-data]
+src = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: tests requiring real external provider credentials/network",
+]

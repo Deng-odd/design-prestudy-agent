@@ -82,6 +82,8 @@ class NodeObservation(BaseCallbackHandler):
             entry["state"].update(entry["update"])
         else:
             entry.update(status="failed", failure_type=failure_type(error), error=safe_error(error))
+            if entry["failure_type"] == "source_consistency_validation":
+                entry["source_validation_diagnostics"] = deepcopy(entry.get("source_candidate_comparisons", []))
         if self.current is entry:
             self.current = None
 
@@ -134,6 +136,15 @@ def observe(enabled, *, record_nodes=False):
                 if recorder and recorder.current is not None:
                     recorder.current["retrieval_evidence"] = deepcopy(evidence)
             result = original(prompt, schema, **kwargs)
+            if "当前任务：analyze_cases\n" in prompt and recorder and recorder.current is not None:
+                # Capture before the Skill's unchanged exact-match guard runs.
+                # Observation failure must never change Agent acceptance or errors.
+                try:
+                    from evals.source_diagnostics import compare_sources
+                    recorder.current["source_candidate_comparisons"] = compare_sources(
+                        [item.model_dump() for item in result.filtered_cases], evidence)
+                except Exception as error:
+                    recorder.current["source_diagnostic_error"] = type(error).__name__
             if "当前任务：generate_search_queries\n" in prompt and recorder and recorder.current is not None:
                 recorder.current["search_queries"] = list(result.search_queries)
             return result
@@ -220,6 +231,10 @@ def run_case(case, *, images="off", judge=True, vision_supported=True):
                                      "status": "unavailable", **failure}
                     judge_failures.append(failure)
         judge_execution = {key: deepcopy(judge_stats[key]) for key in ("llm_calls", "tokens", "cost")}
+    for entry in trace:
+        for key in ("source_candidate_comparisons", "source_validation_diagnostics"):
+            for row in entry.get(key, []):
+                row["case_id"] = case.case_id
     return {"dataset_version": case.dataset_version, "case_id": case.case_id, "execution": execution,
             "decision_metrics": rule_metrics(case, state, trace, execution), "quality_metrics": quality,
             "usable": quality["end_to_end_usability"]["score"] >= 4 if quality["end_to_end_usability"]["score"] is not None else None,

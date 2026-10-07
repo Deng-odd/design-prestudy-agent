@@ -169,3 +169,140 @@ P0 + P1 一起修可能提高完成数，但无法区分 Gate 与来源/输出�
 Case 09 检查 FAR/高度/详细指标为 optional 且不编造；Case 02 人工核验主干道与断点；Case 08 保留历史建筑/居民/滨水约束；Case 01/07 保留来源与输出失败证据。未触发的路径或 fallback 不能声称已验证。
 
 本次只新增分析文档，不修改任何运行结果，不执行 Optimization 或 Regression。
+
+## 7. P0 Regression Results
+
+P0 Regression 为 `outputs/evals/p0-regression-quota-20261007-114647/`，Dataset V1.0 与 Evaluation Framework / Rubric 不变，十 Case 各执行一次，无补跑。模型保持 `qwen3.7-flash-2026-07-15`，endpoint host 保持 `ws-pdhycrq105jayqi9.cn-beijing.maas.aliyuncs.com`。Run metadata 记录 revision `e03c4e0` 与尚未提交的 parse_input.md、test_nodes.py 两项 P0 改动及文件哈希；不能把 commit 单独当成包含 P0 的完整代码快照。
+
+真实 Image Generation 全部按 quota override 禁用，image_calls=0。Case 02 固定输入图片成功用于 parse、site_analysis 和适用 Judge。运行结束的保护文件与输出校验和检查通过，未发现新的 Evaluation Infrastructure bug。
+
+### 7.1 Decision & Workflow
+
+| 指标 | correct | incorrect | N/A | unavailable | 有效分母 | Accuracy |
+|---|---:|---:|---:|---:|---:|---:|
+| Info Sufficiency | 8 | 1 | 0 | 1 | 9 | 88.9% |
+| Case Research Decision | 6 | 0 | 2 | 2 | 6 | 100% |
+| Research Sufficiency | 0 | 0 | 10 | 0 | 0 | — |
+| Search <=2 | 10 | 0 | 0 | 0 | 10 | 100% |
+| Concept regeneration <=1 | 10 | 0 | 0 | 0 | 10 | 100% |
+| Fallback correctness | 0 | 0 | 10 | 0 | 0 | — |
+| Completion | 1 | 9 | 0 | 0 | 10 | 10% |
+
+原七个 Info bad cases 中，02/04/06/08/09 五个正确继续；05 仍 false，10 因 parse 请求失败没有产生 Decision。Case 03 仍正确 ask_user。Case 09 将城市/坐标、用地红线/CAD、容积率/高度列 optional，未再被绝对定位阻断。
+
+Case 05 仍要求范围、形态、尺度和路径关系，check_case_need 未执行，其 no-case-research 路由尚未验证。将其保留为 residual bad case，本轮后不继续针对单个样本改 P0，以避免过拟合和扩大变量。
+
+### 7.2 Quality 与 Coverage
+
+| 指标 | Mean | valid_cases | N/A | unavailable |
+|---|---:|---:|---:|---:|
+| Site Analysis | 4.6 | 5 | 4 | 1 |
+| Case Research | — | 0 | 6 | 4 |
+| Groundedness | 4.2 | 5 | 3 | 2 |
+| Concept Quality | — | 0 | 5 | 5 |
+| End-to-End Usability | — | 0 | 8 | 2 |
+
+Site Analysis / Case Research 实际节点执行覆盖从 2/10 增至 7/10，但七个案例研究节点都失败，没有正式案例输出；Concept / Report 执行覆盖仍为 0。Site 与 Groundedness 有效评分均从 1 增至 5，质量覆盖改善局限于前序专业输出。不能以新增均值断言整个研究质量或 E2E 质量已经提升。
+
+### 7.3 Operational 与执行结果
+
+报告完成 0、early-stop 2、execution failure 8。Agent runtime median 85.52 秒、P95 148.31 秒；LLM SDK calls 45、Search calls 35、Image calls 0；Agent tokens=null、cost=null。Judge SDK calls 11，tokens=null、cost=null；11 次适用且输出可用的指标 Judge 调用中 10 次 scored，1 次失败，指标调用失败率 9.1%。SDK calls 包括技术重试，不能一般性等同指标调用数。
+
+Agent failure rate=80%，四次 source_consistency_validation、四次 llm_call_or_validation。case_09 Groundedness Judge 的 llm_call_or_validation 单独记 unavailable，不计 Agent failure，也没有阻断 Case 10。部分 SDK 请求失败导致可靠 token 总量 unavailable，不补估未知消耗。
+
+| Case | 路径 / 终点 |
+|---|---|
+| 01 | parse → site → check_case_need → case_research；LLM 输出处理失败 |
+| 02 | 同上；来源一致性失败 |
+| 03 | parse → ask_user → END，符合预期 |
+| 04 | parse → site → check_case_need → case_research；来源一致性失败 |
+| 05 | parse → ask_user → END，残留 Info 错判 |
+| 06 | parse → site → check_case_need → case_research；来源一致性失败 |
+| 07 | 同上；LLM 输出处理失败 |
+| 08 | 同上；来源一致性失败 |
+| 09 | 同上；最终包含 Provider PermissionDeniedError |
+| 10 | parse 请求 PermissionDeniedError，没有 Decision 输出 |
+
+### 7.4 与 Baseline 对比及判定
+
+| Metric | v0.1 Baseline | P0 Regression | Change |
+|---|---:|---:|---:|
+| Info Accuracy | 30%（3/10） | 88.9%（8/9） | +58.9 个百分点，分母不同 |
+| Completion | 10% | 10% | 不变 |
+| Case Decision 有效分母 | 2 | 6 | +4 |
+| Research Decision 有效分母 | 0 | 0 | 不变 |
+| Site Analysis valid_cases | 1 | 5 | +4 |
+| Groundedness valid_cases | 1 | 5 | +4 |
+| Case / Concept / E2E valid_cases | 0 / 0 / 0 | 0 / 0 / 0 | 不变 |
+| Agent execution failure rate | 20% | 80% | +60 个百分点 |
+
+判定为 **partially passed**：Gate 与早期覆盖改善，negative control 保持；仍有残留错判和不可用 Decision，未改善 Completion。更多 Case 暴露到后续执行失败，不应把 failure rate 增加直接等同 P0 造成业务逻辑退化。单轮比较、动态检索与模型输出波动不能证明所有变化具有确定因果。
+
+## 8. P1 Failure Diagnosis
+
+本节只检查上述 Regression 已保存的 Case JSON、Trace、evidence、当前调用链和历史独立诊断。不追加运行、不修改 Agent/Prompt/Schema/Validator，也不调用 Provider。以下 unknown 不是确认的模型或 Schema 缺陷。
+
+### 8.1 Source Consistency Failures
+
+Validator 对合并 evidence 建立原始 URL 字典，逐 Case 检查：`case.source in evidence` 且 `case.name == evidence[case.source]["title"]`。前者是精确 URL membership，后者是精确标题比较。前序合并使用 _url_identity 去重（含尾斜杠、追踪参数等处理），但候选来源 guard 仍使用保留的原始 URL；它没有把同一种身份归一化应用于候选匹配。此差异是静态敏感点，不是本轮已确认的触发原因。
+
+| Case | Search source exists | URL match | Title match | Representation difference | Genuine mismatch | Root cause confidence |
+|---|---|---|---|---|---|---|
+| 02 | 6 query 成功，55 条合并 evidence；候选对应项未知 | 未知 | 未知 | 未确认 | 未确认 | 确认来源 guard 拒绝；具体原因 unresolved due to insufficient observability |
+| 04 | 5 query 最终成功，49 条 evidence；候选对应项未知 | 未知 | 未知 | 未确认 | 未确认 | 同上 |
+| 06 | 4 query 成功，35 条 evidence；候选对应项未知 | 未知 | 未知 | 未确认 | 未确认 | 同上 |
+| 08 | 5 query 成功，46 条 evidence；候选对应项未知 | 未知 | 未知 | 未确认 | 未确认 | 同上 |
+
+实际 error 均为“案例来源或标题不属于检索证据”，不是重复标识或分析关联错误。按 Skill 顺序，候选已通过 _CaseResults Schema 后触发 guard；URL 或 title 至少一项不满足，但日志不能分辨被拒字段。
+
+原始 title/URL/snippet/source 已保存在 retrieval_evidence 与逐 query search_observations。示例包括 Case 02 的《案例借鉴∣TOD：城市流量的新磁场》（urbanchina.org）、Case 04 德国鲁尔园区与红旗坊项目、Case 06 mooool / Hassell 滨水材料、Case 08 TOD 社区与历史保护材料。这只能证明材料存在，不能把这些示例当成模型实际选择的候选。
+
+四个 Case 均未保存被拒 LLM 候选的 name/source，也没有原始模型文本。因此无法对标题改写、跨来源合并、HTML entity、大小写/空白/标点、Unicode、尾斜杠或 URL 编码逐项判断。本轮**未确认 HTML entity 为真实根因**；历史 Case 07 同 URL 的 `&rsquo;` → `’` 仅证明此类误拒曾发生。
+
+Case 04 有一次 Search SDK ConnectionError，随后技术重试成功：5 query 最终均有结果，Search SDK calls=6。该临时错误不是最终来源 guard 失败的充分解释。候选证据仍必须补齐后再决定 normalization 范围。
+
+### 8.2 LLM Failures 分层分类
+
+分类使用请求结果与输出处理两层。当前 llm_call_or_validation 聚合标签不能区分 Provider 4xx 和 JSON/Pydantic 错误。raw JSON、finish_reason、HTTP 原始状态、request_id、validation field 均未持久化。
+
+| Case / stage | SDK / Provider observation | JSON / Schema observation | Retry 可确认范围 | 分类与置信边界 |
+|---|---|---|---|---|
+| 01 / analyze_cases | case_research 内 4 次 SDK calls，无 LLM SDK 异常，usage 已记录；HTTP 具体状态未保存 | evidence 已送入分析；未保存 finish_reason、raw JSON、parse/validation 结果 | 两个 structured 调用（query + analysis）合计 2 次额外技术调用；不能分配到各 stage | I unknown，定位于分析输出处理；E/F/G/H 均待证据 |
+| 07 / analyze_cases | 同为 4 次，无 LLM SDK 异常，usage 已记录 | 同上 | 同上 | I unknown；不能认定与历史 nullability 同因 |
+| 09 / analyze_cases | 内 4 次，最终记录 PermissionDeniedError；前序请求亦可能发生输出重试 | 未保存成功与失败调用的逐次 JSON/校验信息 | query + analysis 合计 2 次额外技术调用；最终 403 本身不可重试，无法定位此前重试原因 | A provider_permission 的粗分类；具体记 provider_permission_or_account_failure，B quota/billing 未证实 |
+| 10 / parse_and_check | 1 次 SDK call，PermissionDeniedError，无有效 Decision | 没有可供解析/校验的成功响应记录；不能定性 Schema 失败 | 0 次重试 | A 粗分类；provider_permission_or_account_failure，账户/模型/endpoint/计费子类未明 |
+
+上述合计 retry 推断依据当前调用链：每个失败案例研究已成功生成 query 且进入 analyze_cases，共两个公共 structured 调用；SDK 自带重试为 0。4 次 SDK 调用说明合计两个额外应用层尝试，但不是“每个阶段都重试两次”。没有逐 attempt trace，不能声称三次分析输出都是同一种错误。
+
+Case 01/07 的 SDK 调用未出现 provider_wrapper 捕获的异常，说明响应对象已返回；这不证明响应 content 是完整合法 JSON。_request 还会拒绝非 stop finish_reason、空文本、invalid JSON、Pydantic 非法结果，最终统一抛出 LLMError 并隐藏异常链。因此目前无法在 invalid_json / schema_validation / nullability / truncation 中进一步分类。
+
+Case 09 Groundedness Judge 另有一次 llm_call_or_validation；Judge scope 未保存底层 SDK 异常类型，不能依据前后时间邻近就断定同为 403 或相同 quota 问题。
+
+### 8.3 PermissionDeniedError：Operational / Provider
+
+静态读取当前安装 OpenAI SDK：HTTP 403 映射为 PermissionDeniedError，该类型 status_code 为 403。故 Case 09/10 的 HTTP 403 可以由实际异常类型与 SDK 映射推断，但不是日志中保存的 status_code 字段；没有安全 provider code、响应摘要或 request_id。
+
+现有证据不能区分 API 权限、模型权限、Workspace/endpoint 权限、账户额度/计费或其他 403 业务原因，也不能把它归为 429 rate limit、timeout/5xx、JSON 或 nullability。已观察到请求到达 Provider 并遭拒，不是“请求未发送”。
+
+按现有冻结统计，这两项仍属于 execution failure；根因分析应独立标注 Operational / Provider failure，没有证据证明是 Agent 专业判断或业务逻辑错误。应独立核查账户与 Provider 配置，不用 Agent Prompt/Schema 改动掩盖。当前不切模型、不改配置、不真实验证。
+
+### 8.4 安全 Observability 改进建议（未实施）
+
+当前已具备 node、成功/失败状态、partial State、实际 query、逐 query 标准化结果、合并 evidence、节点 SDK 次数与安全 error。缺口主要在统一 LLM 输出处理和 Skill 来源 guard，Eval wrapper 当前只保存输入 evidence，不保存返回候选。
+
+建议最小诊断记录：run/case/node、逻辑 stage（generate_search_queries / analyze_cases 等）、调用与 attempt 标识、attempt_index / retries_used；SDK outcome、exception_type、http_status、脱敏 provider_error_code、request_id、finish_reason、响应长度；json_parse_success、validation_success、validation_field/error_type、预期类型及实际类型、字段缺失/null/额外字段标记。字段值默认不记录；确需原文时仅限受控、脱敏、权限受限的显式诊断副本，不默认保存完整敏感内容。
+
+Source mismatch 单独记录被拒候选索引、candidate title/URL、对应 evidence title/URL 或不存在标记、exact_url_match/exact_title_match、规范化差异类别；只保留公开检索来源的必要片段，移除 URL secret/query token，避免记录完整专业分析或用户资料。输出已通过 Schema 时在 guard 前保存诊断候选来源对照，不把候选提前写入 AgentState。
+
+不记录 API Key、敏感 header、完整敏感 Prompt、data URI 或私有文件内容。异常处理层保留对外受控错误，同时另行记录白名单诊断字段；不增加 State 字段、不改变 retry、路由或 fallback 行为。建议先用离线测试证明诊断不改变业务结果、不会泄露 secret，并能区分请求失败与输出失败。
+
+### 8.5 Failure Modes 与下一轮最小顺序
+
+P1 应拆为 **P1-A Source validation robustness** 与 **P1-B LLM / structured-output robustness（具体根因未明）**。Provider 403 独立列为 **Operational / Provider failure**，不把三者混成一个 Schema 或 normalization 问题。
+
+1. **Fix 1：先补安全 observability。** 在另行授权的最小范围中捕获 per-attempt 输出状态和被拒来源对照，保持业务行为不变；无需再次跑完整 Regression 才能设计这些字段。
+2. **Provider issue：独立核查。** 使用安全 code/status/request_id 确认权限或账户原因；解决后再按授权进行最小能力验证，避免把账户故障与 Agent 改动混入同一归因实验。
+3. **Fix 2：source normalization 条件式实施。** 历史证据足以支持考虑表示等价，但本轮无法决定四项失败应如何修。先确认候选差异，再最小处理已证明的等价；保留 genuine URL/title mismatch 的拒绝与离线反例。不泛化删除标点或任意模糊匹配。
+4. **Fix 3：structured compatibility 按具体错误修。** 只有看到字段、类型、finish_reason 或解析异常后才选择对应最小修复；不复用此前 nullability 修补作猜测，不放宽整套 Schema，不静默转换任意 null。与 source fix 分开验证以利归因。
+
+P0 本轮停止继续优化，Case 05 作为 residual bad case 原样保留。任何后续修复不按 Case ID 特判、不改 Dataset Ground Truth，不以改善本 Dataset 得分为由取消来源/类型约束。本节仅诊断与建议，未进入 P1 Optimization。

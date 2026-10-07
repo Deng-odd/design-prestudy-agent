@@ -176,6 +176,74 @@ def test_source_fact_limits_are_present_in_case_prompt(fake_llm, monkeypatch, se
     assert "不将推理伪装成网页事实" in prompt
 
 
+@pytest.mark.parametrize("variant,valid", [
+    ("full_url", True),
+    ("bare_domain", False),
+    ("www_domain", False),
+    ("website_label", False),
+    ("official_label", False),
+    ("rewritten_title", False),
+    ("truncated_title", False),
+    ("removed_subtitle", False),
+    ("cross_source", False),
+    ("exact_metadata", True),
+])
+def test_case_source_contract_keeps_exact_guard(monkeypatch, variant, valid):
+    import json
+    from conftest import make_site
+    # Formal business objects construct the mock candidates; only provenance is varied.
+    original = Case(name="Example Urban Renewal Project", location="未提供", project_type="城市更新",
+                    source="https://example.com/projects/urban-renewal", relevance="专业推理：更新策略参考")
+    other = Case(name="Shanghai Urban Renewal Project (Phase I)", location="未提供", project_type="城市更新",
+                 source="https://other.example/projects/shanghai?phase=1", relevance="专业推理：更新策略参考")
+    evidence = [{"title": case.name, "url": case.source, "snippet": "Urban renewal project overview",
+                 "source": domain} for case, domain in ((original, "example.com"), (other, "other.example"))]
+    candidate_data = (other if variant in {"rewritten_title", "exact_metadata"} else original).model_dump()
+    if variant in {"bare_domain", "www_domain", "website_label", "official_label"}:
+        candidate_data["source"] = {"bare_domain": "example.com", "www_domain": "www.example.com",
+                                    "website_label": "官网", "official_label": "官方网站"}[variant]
+    elif variant == "rewritten_title":
+        candidate_data["name"] = "Shanghai Urban Renewal Project"
+    elif variant == "truncated_title":
+        candidate_data["name"] = "Example Urban Renewal"
+    elif variant == "removed_subtitle":
+        original = original.model_copy(update={"name": "Example Urban Renewal Project: Waterfront Connections"})
+        evidence[0]["title"] = original.name
+    elif variant == "cross_source":
+        candidate_data["source"] = other.source  # Both values exist, but belong to different evidence.
+    candidate = Case.model_validate(candidate_data)
+    analysis = CaseAnalysis(case=candidate.name, relevance_reason="专业推理：更新策略参考",
+                            spatial_strategy=["开放空间连接"], applicable_reference=["专业推理：改善步行联系"],
+                            limitations=["仅有摘要证据"])
+    search = Mock(return_value=evidence)
+    monkeypatch.setattr(case_research, "web_search", search)
+    def structured_response(prompt, schema, **kwargs):
+        assert "当前任务：analyze_cases\n" in prompt
+        assert json.loads(prompt.rsplit("INPUT_JSON:\n", 1)[1])["search_results"] == evidence
+        for instruction in (
+            "Source metadata 是 provenance", "Case.name 必须逐字复制 evidence.title 的完整字符串原值",
+            "禁止改写、总结、翻译、截断、删除括号内容、删除副标题或自行润色",
+            "Case.source 必须逐字复制同一条 evidence.url 的完整 URL",
+            "不要复制 evidence.source", "禁止依据标题重新构造 URL",
+            "禁止把 A evidence 的 title 与 B evidence 的 URL 组合",
+            "从 title 推测 URL 或自行拼接 URL", "或组合多个 evidence",
+            "无法关联到明确 evidence 的案例不要输出",
+        ):
+            assert instruction in prompt
+        return schema(filtered_cases=[candidate], case_analysis=[analysis])
+    llm = Mock(side_effect=structured_response)
+    monkeypatch.setattr(case_research, "call_llm_structured", llm)
+    if valid:
+        result = case_research.research_cases(make_site().model_dump(), ["更新策略"], ["更新案例"])
+        assert result["filtered_cases"] == [candidate.model_dump()]
+        assert result["case_analysis"] == [analysis.model_dump()]
+    else:
+        # Pydantic accepts the str; the existing exact provenance guard still rejects it.
+        with pytest.raises(LLMError, match="^案例来源或标题不属于检索证据$"):
+            case_research.research_cases(make_site().model_dump(), ["更新策略"], ["更新案例"])
+    assert llm.call_count == search.call_count == 1
+
+
 @pytest.mark.parametrize("references,enabled,capable,expected", [(None, True, True, "text2img"),
     (["site.png"], False, True, "text2img"), (["site.png"], True, False, "text2img"),
     (["site.png"], True, True, "img2img")])

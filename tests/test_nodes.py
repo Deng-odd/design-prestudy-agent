@@ -146,9 +146,9 @@ def test_tool_exhaustion_still_counts_one_business_attempt(fake_llm, sdk_search)
     "user_input,sufficient,critical,optional,instruction_fragments",
     [
         ("帮我做一个城市设计方案。", False, ["研究对象与基本场地空间条件"], [],
-         ["无法识别研究对象", "几乎没有可分析", "不能仅凭项目类型或笼统目标放行"]),
+         ["研究对象无法识别", "场地条件几乎完全缺失", "研究对象与场地条件不足"]),
         ("滨水旧仓储区更新，北侧河流，南侧道路，现状岸线封闭，希望开放公共空间。",
-         True, [], ["城市名称"], ["城市名称", "不得以“更准确”为由升级为 critical"]),
+         True, [], ["城市名称"], ["城市名称", "不需要先知道城市名或坐标"]),
         ("40 公顷片区更新，东侧轨道站、西侧公园，住宅与商业混合，公共空间零散；希望改善连接，FAR 和高度未定。",
          True, [], ["FAR/容积率", "建筑高度"], ["FAR/容积率", "建筑高度", "不能编造未提供的指标"]),
         ("旧产业园更新，厂房和仓储密集，内部道路封闭，希望保留生产并增加研发与公共空间，没有 CAD 或红线图。",
@@ -158,11 +158,24 @@ def test_tool_exhaustion_still_counts_one_business_attempt(fake_llm, sdk_search)
         ("同一个研究对象既被定义为完全没有任何建筑的自然湿地，又被明确要求只研究该对象现有的密集办公建筑；两种现状描述都必须视为准确且不能区分子区域。",
          False, ["确认互相矛盾的研究对象现状"], [], ["核心信息存在严重矛盾", "不把可共同存在的多功能或多约束误判为矛盾"]),
         ("准备做一个 CBD 更新项目，希望提升品质与活力，请做前期研究和设计方向。",
-         False, ["实际场地范围/研究对象", "现状空间条件或具体问题"], [],
-         ["做一个 CBD 更新，提升品质与活力", "没有实际场地范围/研究对象"]),
+         False, ["现状空间条件或具体问题"], [],
+         ["做一个 CBD 更新，提升品质与活力", "不满足第二项，必须追问"]),
+        ("社区公共空间更新：沿街商业与住宅混合，入口缺少休息座椅；请识别改善机会并提出初步概念，城市、FAR、高度、CAD 和精确红线均未提供。",
+         True, [], ["城市名称", "FAR/容积率", "建筑高度", "CAD/总平图", "完整用地红线"],
+         ["三类最低条件均满足", "此规则的优先级高于“资料还可以更完整”"]),
+        ("一个传统制造产业园准备更新，厂房和仓储密集，公共空间不足，步行环境较差，园区界面封闭。希望保留生产并导入研发、展示和共享办公，研究功能复合与空间开放策略。没有提供所在城市或周边详细背景。",
+         True, [], ["城市名称", "详细周边背景"], ["不因缺少所在城市或更详细周边背景而阻断"]),
+        ("已建成商业中心的室外中庭遮阴不足，请基于这个问题做小尺度公共空间改善方向，精确地址、坐标、规划指标、定量交通数据及图片未提供。",
+         True, [], ["精确地址/经纬度", "完整规划指标", "定量交通数据", "场地图像"],
+         ["至少提供一组可分析的场地条件", "不要求全部都有", "不能单独导致 false"]),
+        ("请研究更新策略，但研究对象及项目类型尚未确定；现在只知道某处存在道路阻隔。",
+         False, ["研究对象与项目类型"], [], ["研究对象无法识别"]),
+        ("记录一个社区的现状：住宅与沿街商业混合，西侧有公园，但尚未提出任何研究、改善或成果需求。",
+         False, ["研究意图"], [], ["研究意图无法识别"]),
     ],
     ids=["truly-insufficient", "no-city", "no-far-height", "no-cad-boundary",
-         "relative-location", "contradictory-core", "generic-cbd-insufficient"],
+         "relative-location", "contradictory-core", "generic-cbd-insufficient", "minimum-complete-no-optional",
+         "industrial-no-city", "one-condition-only-optional-missing", "missing-object", "missing-intent"],
 )
 def test_parse_preliminary_research_prompt_and_decision_contract(
     monkeypatch, user_input, sufficient, critical, optional, instruction_fragments
@@ -180,8 +193,13 @@ def test_parse_preliminary_research_prompt_and_decision_contract(
     def structured(prompt, schema, **kwargs):
         assert schema is nodes._ParsedInput
         assert "不是判断是否足以完成正式规划、详细设计或审批" in prompt
-        assert "最后一种情况须说明为什么已有资料不能支持前期研究" in prompt
-        assert "不把这些字段规定为永远 optional" in prompt
+        for rule in (
+            "Research Object Identifiable", "At Least One Meaningful Site Condition", "Research Intent Identifiable",
+            '必须 info_sufficient=true、missing_critical=[]、followup_question=""',
+            "此规则的优先级高于“资料还可以更完整”", "只有以下任一情况成立才允许 info_sufficient=false",
+            "场地条件几乎完全缺失", "不能覆盖三类 minimum input 已满足的事实",
+        ):
+            assert rule in prompt
         for fragment in instruction_fragments:
             assert fragment in prompt
         assert json.loads(prompt.split("INPUT_JSON:\n", 1)[1]) == {"user_input": user_input}

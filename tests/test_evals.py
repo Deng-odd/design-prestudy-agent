@@ -20,7 +20,7 @@ def test_frozen_dataset_and_asset():
     assert {c.dataset_version for c in cases} == {"1.0"}
     assert cases[1].site_images == ["data/eval/assets/case_02_tod_site.png"]
     asset = ROOT / cases[1].site_images[0]
-    assert asset.read_bytes() == Path(str(asset) + ".png").read_bytes()
+    assert asset.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")  # Canonical asset; no duplicate file dependency.
     assert cases[2].expected_info_sufficient is False
     assert cases[4].expected_need_case_research is False
     assert cases[8].expected_need_case_research is None
@@ -383,3 +383,56 @@ def test_judge_failure_does_not_stop_subsequent_cli_case(fake_llm, monkeypatch, 
     assert second["quality_metrics"]["groundedness"]["status"] == "scored"
     assert ("case_08", "concept_quality") in called
     assert json.loads((directory / "summary.json").read_text(encoding="utf-8"))["C_operational"]["failure_rate"] == 0
+
+
+@pytest.mark.parametrize("index", [0, 1, 9])
+def test_eval_override_skips_all_generation_policies(fake_llm, fake_image, index):
+    from src.skills import concept_generation
+    case = load_dataset()[index]
+    before = case.model_dump()
+    original = concept_generation.generate_image
+    result = run_case(case, images="on", judge=False, disable_image_generation=True)
+    assert result["execution"]["status"] == "success"
+    assert result["execution"]["image_generation_override"] is True
+    assert result["execution"]["dataset_image_generation_mode"] == case.image_generation_mode
+    assert result["execution"]["image_generation_status"] == "skipped_override"
+    assert not result["execution"]["image_generation_enabled"]
+    assert result["execution"]["image_calls"] == 0
+    assert result["agent_output"]["concepts"] and result["agent_output"]["final_report"]
+    assert result["agent_output"]["images"] == []
+    assert not any(task in {"image_prompt", "image_reference_check"} for task, _, _ in fake_llm.calls)
+    fake_image.assert_not_called()
+    assert concept_generation.generate_image is original
+    assert case.model_dump() == before
+    if index == 1:
+        parse = next(kwargs for task, _, kwargs in fake_llm.calls if task == "parse_and_check")
+        assert parse["images"] == result["agent_output"]["site_images"]
+    if index == 9:
+        # An ordinary call after override still honors required generation.
+        fake_llm.quality = ["PASS"]
+        normal = run_case(case, images="off", judge=False)
+        assert not normal["execution"]["image_generation_override"]
+        assert normal["agent_output"]["images"] and fake_image.call_count == 2
+
+
+def test_cli_image_override_persisted_metadata_and_judges(fake_llm, fake_image, sdk_search, search_hit, monkeypatch, tmp_path):
+    from evals import judge
+    llm = Mock(return_value=JudgeScore(score=4, reason="Evaluate existing research chain", key_issues=[]))
+    monkeypatch.setattr(judge, "call_llm_structured", llm)
+    fake_llm.need_cases = True
+    sdk_search.return_value = {"results": [{"title": search_hit["title"], "url": search_hit["url"], "content": search_hit["snippet"]}]}
+    directory = tmp_path / "public-quota-override"
+    main(["--case", "case_10", "--images", "on", "--disable-image-generation", "--output", str(directory)])
+    metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+    result = json.loads((directory / "case_10.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == "completed" and metadata["completed_cases"] == 1
+    assert metadata["image_generation_override"] and metadata["disable_image_generation"]
+    assert metadata["image_generation_policy"] == "skip_real_generation"
+    assert metadata["dataset_image_generation_modes"] == {"case_10": "required"}
+    assert metadata["optional_images_requested"] == "on" and metadata["image_calls"] == 0
+    assert result["execution"]["image_generation_status"] == "skipped_override"
+    assert result["agent_output"]["final_report"]
+    fake_image.assert_not_called()
+    assert llm.call_count == 5  # All applicable, available Quality metrics remain evaluated.
+    assert all(metric["status"] == "scored" for metric in result["quality_metrics"].values())
+    assert all("不得仅因未生成意向图扣分" in call.args[0] for call in llm.call_args_list)

@@ -192,7 +192,7 @@ def observe(enabled, *, record_nodes=False):
         yield stats
 
 
-def run_case(case, *, images="off", judge=True, vision_supported=True):
+def run_case(case, *, images="off", judge=True, vision_supported=True, disable_image_generation=False):
     from src.agent.graph import graph
     from src.agent.state import create_initial_state
     paths = [str(ROOT / path) for path in case.site_images]
@@ -200,7 +200,8 @@ def run_case(case, *, images="off", judge=True, vision_supported=True):
     trace = []
     started = perf_counter()
     status, failed = "success", None
-    with observe(images_enabled(case, images), record_nodes=True) as stats:
+    enabled = not disable_image_generation and images_enabled(case, images)
+    with observe(enabled, record_nodes=True) as stats:
         recorder = stats["node_observer"]
         try:
             for path in paths:
@@ -214,7 +215,13 @@ def run_case(case, *, images="off", judge=True, vision_supported=True):
         trace = deepcopy(recorder.trace)
         execution = {key: deepcopy(value) for key, value in stats.items() if key not in {"evidence", "node_observer"}}
         execution.update(status=status, failure_type=failed, runtime_seconds=perf_counter() - started,
-                         image_generation_enabled=images_enabled(case, images))
+                         image_generation_enabled=enabled,
+                         image_generation_override=disable_image_generation,
+                         dataset_image_generation_mode=case.image_generation_mode)
+        if disable_image_generation:
+            execution["image_generation_status"] = "skipped_override"
+            if execution["image_calls"] != 0:
+                raise RuntimeError("Evaluation image override did not prevent Image SDK calls")
         evidence = deepcopy(stats["evidence"])
     # Judge costs/calls do not inflate Agent execution metrics.
     quality = {}
@@ -252,6 +259,8 @@ def main(argv=None):
     parser.add_argument("--case", action="append", help="Repeat for multiple cases")
     parser.add_argument("--all", action="store_true", help="Explicitly run all ten frozen cases")
     parser.add_argument("--images", choices=("on", "off"), default="off", help="Only controls optional cases")
+    parser.add_argument("--disable-image-generation", action="store_true",
+                        help="Eval-only override: skip all image generation, including required cases; input images retained")
     parser.add_argument("--no-judge", action="store_true")
     parser.add_argument("--vision-unsupported", action="store_true", help="Explicit known capability: Case 02 visual quality metrics N/A; input images retained")
     parser.add_argument("--output", type=Path)
@@ -264,14 +273,26 @@ def main(argv=None):
     selected = cases if args.all else [case for case in cases if case.case_id in args.case]
     directory = args.output or ROOT / "outputs/evals" / uuid4().hex
     directory.mkdir(parents=True, exist_ok=False)
+    metadata = {"dataset_version": "1.0", "case_ids": [case.case_id for case in selected],
+                "status": "running", "disable_image_generation": args.disable_image_generation,
+                "image_generation_override": args.disable_image_generation,
+                "image_generation_policy": "skip_real_generation" if args.disable_image_generation else "dataset",
+                "optional_images_requested": args.images,
+                "dataset_image_generation_modes": {case.case_id: case.image_generation_mode for case in selected}}
+    metadata_path = directory / "metadata.json"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     results = []
     for case in selected:
         # Judge failures are per-metric observations, never a run health assertion.
-        result = run_case(case, images=args.images, judge=not args.no_judge, vision_supported=not args.vision_unsupported)
+        result = run_case(case, images=args.images, judge=not args.no_judge, vision_supported=not args.vision_unsupported,
+                          disable_image_generation=args.disable_image_generation)
         (directory / f"{case.case_id}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         results.append(result)
         print(case.case_id, result["execution"]["status"])
     (directory / "summary.json").write_text(json.dumps(aggregate(results), ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata.update(status="completed", completed_cases=len(results),
+                    image_calls=sum(result["execution"]["image_calls"] for result in results))
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     print(directory)
 
 

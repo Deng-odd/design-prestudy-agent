@@ -174,15 +174,15 @@ def test_failed_case_node_preserves_queries_evidence_calls_and_decision(fake_llm
     from src.schemas import Case
     fake_llm.need_cases = True
     sdk_search.return_value = {"results": [{"title": search_hit["title"], "url": search_hit["url"], "content": search_hit["snippet"]}]}
-    original = case_research.call_llm_structured
-    def changed_title(prompt, schema, **kwargs):
-        result = original(prompt, schema, **kwargs)
-        if "当前任务：analyze_cases\n" in prompt:
+    original = case_research._map_selected_cases
+    def changed_title(selection, evidence):
+        result = original(selection, evidence)
+        if True:
             data = result.model_dump()
             data["filtered_cases"][0] = Case.model_validate({**data["filtered_cases"][0], "name": "改写后的标题"}).model_dump()
-            return schema.model_validate(data)
+            return case_research._CaseResults.model_validate(data)
         return result
-    monkeypatch.setattr(case_research, "call_llm_structured", changed_title)
+    monkeypatch.setattr(case_research, "_map_selected_cases", changed_title)
     result = run_case(load_dataset()[6], judge=False)
     assert result["execution"]["status"] == "failed"
     assert result["execution"]["failure_type"] == "source_consistency_validation"
@@ -271,9 +271,9 @@ def test_failed_execution_still_scores_saved_professional_outputs(fake_llm, sdk_
     llm = Mock(return_value=JudgeScore(score=4, reason="Evaluate existing professional facts only", key_issues=[]))
     monkeypatch.setattr(judge, "call_llm_structured", llm)
     if index == 1:
-        original = case_research.call_llm_structured
+        original = case_research._map_selected_cases
         def fail(prompt, schema, **kwargs):
-            if "当前任务：analyze_cases\n" in prompt:
+            if True:
                 raise LLMError("案例来源或标题不属于检索证据")
             return original(prompt, schema, **kwargs)
         monkeypatch.setattr(case_research, "call_llm_structured", fail)

@@ -21,7 +21,7 @@ def images_enabled(case, requested="off"):
 
 def failure_type(error):
     message = str(error)
-    if any(text in message for text in ("案例来源或标题", "案例标识重复", "案例分析与已筛选案例")):
+    if any(text in message for text in ("案例来源或标题", "案例标识重复", "案例分析与已筛选案例", "案例 source_id 不属于当前检索证据")):
         return "source_consistency_validation"
     if isinstance(error, FileNotFoundError):
         return "input_asset_missing"
@@ -42,7 +42,7 @@ def failure_type(error):
 def safe_error(error):
     """Retain known controlled failures without exporting arbitrary SDK payloads."""
     for message in ("案例来源或标题不属于检索证据", "案例标识重复，无法可靠对应分析",
-                    "案例分析与已筛选案例无法对应"):
+                    "案例分析与已筛选案例无法对应", "案例 source_id 不属于当前检索证据"):
         if message in str(error):
             return message
     return f"{type(error).__name__}: {failure_type(error)}"
@@ -137,18 +137,22 @@ def observe(enabled, *, record_nodes=False):
                     recorder.current["retrieval_evidence"] = deepcopy(evidence)
             result = original(prompt, schema, **kwargs)
             if "当前任务：analyze_cases\n" in prompt and recorder and recorder.current is not None:
-                # Capture before the Skill's unchanged exact-match guard runs.
-                # Observation failure must never change Agent acceptance or errors.
-                try:
-                    from evals.source_diagnostics import compare_sources
-                    recorder.current["source_candidate_comparisons"] = compare_sources(
-                        [item.model_dump() for item in result.filtered_cases], evidence)
-                except Exception as error:
-                    recorder.current["source_diagnostic_error"] = type(error).__name__
+                recorder.current["selected_source_ids"] = [item.source_id for item in result.selected_cases]
             if "当前任务：generate_search_queries\n" in prompt and recorder and recorder.current is not None:
                 recorder.current["search_queries"] = list(result.search_queries)
             return result
         return wrapper
+    original_mapping = case_research._map_selected_cases
+    def mapping_wrapper(selection, evidence):
+        result = original_mapping(selection, evidence)
+        if recorder and recorder.current is not None:
+            try:
+                from evals.source_diagnostics import compare_sources
+                recorder.current["source_candidate_comparisons"] = compare_sources(
+                    [item.model_dump() for item in result.filtered_cases], evidence)
+            except Exception as error:
+                recorder.current["source_diagnostic_error"] = type(error).__name__
+        return result
     original_search = case_research.web_search
     def search_wrapper(query, *args, **kwargs):
         observation = {"query": query, "status": "running", "results": [], "failure_type": None}
@@ -184,6 +188,7 @@ def observe(enabled, *, record_nodes=False):
         stack.enter_context(patch.object(concept_generation, "call_llm", text_wrapper))
         stack.enter_context(patch.object(concept_generation, "generate_image", image_wrapper))
         stack.enter_context(patch.object(case_research, "web_search", search_wrapper))
+        stack.enter_context(patch.object(case_research, "_map_selected_cases", mapping_wrapper))
         yield stats
 
 

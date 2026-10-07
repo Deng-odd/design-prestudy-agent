@@ -118,16 +118,12 @@ class FakeLLM:
         if task in {"generate_search_queries", "refine_search"}:
             return schema(search_queries=["公共空间 设计案例" if task == "generate_search_queries" else "公共空间 慢行联系 设计案例"])
         if task == "analyze_cases":
-            cases, analyses = [], []
-            for result in inputs["search_results"]:
-                case = Case(name=result["title"], location="摘要未明确位置", project_type="公共空间",
-                            source=result["url"], relevance=f"专业推理：公共空间参考；来源域名：{result['source']}")
-                cases.append(case)
-                analyses.append(CaseAnalysis(case=case.name, relevance_reason="与当前公共空间研究有关",
-                                             spatial_strategy=["来源摘要：" + result["snippet"]],
-                                             applicable_reference=["专业推理：比较公共节点连接"],
-                                             limitations=["仅有摘要，未核验全文；" + case.source]))
-            return schema(filtered_cases=cases, case_analysis=analyses)
+            from src.skills.case_research import _SelectedCase
+            selected = [_SelectedCase(source_id=result["source_id"], location="摘要未明确位置", project_type="公共空间",
+                relevance=f"专业推理：公共空间参考；来源域名：{result['source']}", relevance_reason="与当前公共空间研究有关",
+                spatial_strategy=["来源摘要：" + result["snippet"]], applicable_reference=["专业推理：比较公共节点连接"],
+                limitations=["仅有摘要，未核验全文；" + result["url"]]) for result in inputs["search_results"]]
+            return schema(selected_cases=selected)
         if task == "check_research":
             enough = self.research_checks.pop(0) if self.research_checks else bool(inputs["filtered_cases"])
             return schema(research_sufficient=enough, research_gaps=[] if enough else ["缺少可追溯空间策略"])

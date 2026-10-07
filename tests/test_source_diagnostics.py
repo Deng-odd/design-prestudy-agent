@@ -27,7 +27,7 @@ def test_diagnostic_comparison_preserves_guard(fake_llm, monkeypatch, evidence_t
                      applicable_reference=["Public access"], limitations=["Limited snippet"])
     ])
     monkeypatch.setattr(case_research, "web_search", lambda query: [evidence])
-    monkeypatch.setattr(case_research, "call_llm_structured", lambda *a, **k: result)
+    monkeypatch.setattr(case_research, "_map_selected_cases", lambda *a, **k: result)
     row = compare_sources([candidate.model_dump()], [evidence])[0]
     assert row["classification"] == kind
     assert row["normalized_title_equal"] is title_equal
@@ -55,16 +55,16 @@ def test_failed_node_records_actual_candidate_and_evidence(fake_llm, sdk_search,
     fake_llm.need_cases = True
     sdk_search.return_value = {"results": [{"title": "Shanghai&rsquo;s Xuhui Waterfront",
                                           "url": "https://example.com/a", "content": "Industrial waterfront"}]}
-    original = case_research.call_llm_structured
-    def candidate_response(prompt, schema, **kwargs):
-        result = original(prompt, schema, **kwargs)
-        if "当前任务：analyze_cases\n" in prompt:
+    original = case_research._map_selected_cases
+    def candidate_response(selection, evidence):
+        result = original(selection, evidence)
+        if True:
             data = result.model_dump()
             data["filtered_cases"][0]["name"] = "Shanghai’s Xuhui Waterfront"
             data["case_analysis"][0]["case"] = "Shanghai’s Xuhui Waterfront"
-            return schema.model_validate(data)
+            return case_research._CaseResults.model_validate(data)
         return result
-    monkeypatch.setattr(case_research, "call_llm_structured", candidate_response)
+    monkeypatch.setattr(case_research, "_map_selected_cases", candidate_response)
     result = run_case(load_dataset()[1], judge=False)
     failed = result["execution_trace"][-1]
     assert failed["node"] == "case_research" and failed["status"] == "failed"
@@ -87,15 +87,15 @@ def test_diagnostic_failure_cannot_change_guard_error(fake_llm, sdk_search, monk
     from evals import source_diagnostics
     fake_llm.need_cases = True
     sdk_search.return_value = {"results": [{"title": "Evidence", "url": "https://example.com/a", "content": "Project"}]}
-    original = case_research.call_llm_structured
-    def candidate_response(prompt, schema, **kwargs):
-        result = original(prompt, schema, **kwargs)
-        if "当前任务：analyze_cases\n" in prompt:
+    original = case_research._map_selected_cases
+    def candidate_response(selection, evidence):
+        result = original(selection, evidence)
+        if True:
             data = result.model_dump()
             data["filtered_cases"][0]["name"] = "Different title"
-            return schema.model_validate(data)
+            return case_research._CaseResults.model_validate(data)
         return result
-    monkeypatch.setattr(case_research, "call_llm_structured", candidate_response)
+    monkeypatch.setattr(case_research, "_map_selected_cases", candidate_response)
     monkeypatch.setattr(source_diagnostics, "compare_sources", lambda *a: (_ for _ in ()).throw(ValueError("diagnostic failure")))
     result = run_case(load_dataset()[1], judge=False)
     assert result["execution"]["failure_type"] == "source_consistency_validation"
@@ -120,16 +120,16 @@ def test_observation_keeps_graph_route_and_exception(fake_llm, sdk_search, monke
     fake_llm.quality = ["PASS", "PASS"]
     sdk_search.return_value = {"results": [{"title": "Shanghai&rsquo;s Xuhui Waterfront",
                                           "url": "https://example.com/a", "content": "Industrial waterfront"}]}
-    original = case_research.call_llm_structured
-    def response(prompt, schema, **kwargs):
-        result = original(prompt, schema, **kwargs)
-        if rewritten and "当前任务：analyze_cases\n" in prompt:
+    original = case_research._map_selected_cases
+    def response(selection, evidence):
+        result = original(selection, evidence)
+        if rewritten:
             data = result.model_dump()
             data["filtered_cases"][0]["name"] = "Shanghai’s Xuhui Waterfront"
             data["case_analysis"][0]["case"] = "Shanghai’s Xuhui Waterfront"
-            return schema.model_validate(data)
+            return case_research._CaseResults.model_validate(data)
         return result
-    monkeypatch.setattr(case_research, "call_llm_structured", response)
+    monkeypatch.setattr(case_research, "_map_selected_cases", response)
     from langchain_core.callbacks import BaseCallbackHandler
     class RouteRecorder(BaseCallbackHandler):
         def __init__(self):

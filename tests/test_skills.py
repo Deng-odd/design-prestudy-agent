@@ -38,7 +38,7 @@ def test_case_research_validated_mock_and_no_counter(fake_llm, monkeypatch, sear
     assert site == before
     search.assert_called_once_with(result["search_queries"][0])
     task, inputs, kwargs = fake_llm.calls[-1]
-    assert task == "analyze_cases" and inputs["search_results"] == [search_hit]
+    assert task == "analyze_cases" and inputs["search_results"] == [{**search_hit, "source_id": "src_001"}]
     assert kwargs["temperature"] == config.LLM_TEMPERATURE_ANALYSIS
 
 
@@ -88,7 +88,7 @@ def test_case_filtering_is_llm_decision_not_keyword_rule(fake_llm, monkeypatch, 
     site = site_data()
     monkeypatch.setattr(case_research, "web_search", Mock(return_value=[search_hit]))
     def reject(prompt, schema, **kwargs):
-        return schema(filtered_cases=[], case_analysis=[])
+        return schema(selected_cases=[])
     monkeypatch.setattr(case_research, "call_llm_structured", reject)
     result = case_research.research_cases(site, ["公共空间"], ["当前词"])
     assert result["filtered_cases"] == result["case_analysis"] == []
@@ -103,13 +103,13 @@ def test_case_research_rejects_invalid_complex_input():
 def test_llm_cannot_invent_sources_or_unlinked_cases(fake_llm, monkeypatch, search_hit, mismatch):
     site = site_data()
     monkeypatch.setattr(case_research, "web_search", Mock(return_value=[search_hit]))
-    def invented(prompt, schema, **kwargs):
+    def invented(selection, evidence):
         case = Case(name="新标题" if mismatch == "title" else search_hit["title"], location="未知", project_type="公共空间",
                     source="https://invented.invalid" if mismatch == "source" else search_hit["url"], relevance="推理")
         analysis = CaseAnalysis(case="无对应案例" if mismatch == "analysis" else case.name,
                                 relevance_reason="推理", spatial_strategy=[], applicable_reference=[], limitations=[])
-        return schema(filtered_cases=[case], case_analysis=[analysis])
-    monkeypatch.setattr(case_research, "call_llm_structured", invented)
+        return case_research._CaseResults(filtered_cases=[case], case_analysis=[analysis])
+    monkeypatch.setattr(case_research, "_map_selected_cases", invented)
     with pytest.raises(LLMError):
         case_research.research_cases(site, ["公共空间"], ["词"])
 
@@ -219,20 +219,18 @@ def test_case_source_contract_keeps_exact_guard(monkeypatch, variant, valid):
     monkeypatch.setattr(case_research, "web_search", search)
     def structured_response(prompt, schema, **kwargs):
         assert "当前任务：analyze_cases\n" in prompt
-        assert json.loads(prompt.rsplit("INPUT_JSON:\n", 1)[1])["search_results"] == evidence
-        for instruction in (
-            "Source metadata 是 provenance", "Case.name 必须逐字复制 evidence.title 的完整字符串原值",
-            "禁止改写、总结、翻译、截断、删除括号内容、删除副标题或自行润色",
-            "Case.source 必须逐字复制同一条 evidence.url 的完整 URL",
-            "不要复制 evidence.source", "禁止依据标题重新构造 URL",
-            "禁止把 A evidence 的 title 与 B evidence 的 URL 组合",
-            "从 title 推测 URL 或自行拼接 URL", "或组合多个 evidence",
-            "无法关联到明确 evidence 的案例不要输出",
-        ):
-            assert instruction in prompt
-        return schema(filtered_cases=[candidate], case_analysis=[analysis])
+        current = json.loads(prompt.rsplit("INPUT_JSON:\n", 1)[1])["search_results"]
+        assert current == [{**item, "source_id": f"src_{i:03d}"} for i, item in enumerate(evidence, 1)]
+        assert "标题和完整 URL 由程序根据 source_id" in prompt
+        assert "不能组合多个 evidence 的来源" in prompt
+        from src.skills.case_research import _SelectedCase
+        return schema(selected_cases=[_SelectedCase(source_id="src_001", location="未提供", project_type="城市更新",
+            relevance="推理", relevance_reason="推理", spatial_strategy=[], applicable_reference=[], limitations=[])])
     llm = Mock(side_effect=structured_response)
     monkeypatch.setattr(case_research, "call_llm_structured", llm)
+    # Fault injection after mapping verifies the original exact guard, not model metadata generation.
+    monkeypatch.setattr(case_research, "_map_selected_cases", lambda *a: case_research._CaseResults(
+        filtered_cases=[candidate], case_analysis=[analysis]))
     if valid:
         result = case_research.research_cases(make_site().model_dump(), ["更新策略"], ["更新案例"])
         assert result["filtered_cases"] == [candidate.model_dump()]
@@ -316,3 +314,44 @@ def test_reference_selection_respects_provider_limit(fake_llm, fake_image, monke
     assert all(image["reference_images"] == refs[:3] for image in result["images"])
     check = next(kwargs for task, _, kwargs in fake_llm.calls if task == "image_reference_check")
     assert check["images"] == refs[:3]
+
+
+@pytest.mark.parametrize("source_id", ["", "src_999", "src_000", "other_run_src_001"])
+def test_source_id_unknown_rejected(fake_llm, monkeypatch, search_hit, source_id):
+    site = site_data()
+    monkeypatch.setattr(case_research, "web_search", lambda query: [search_hit])
+    selected = case_research._SelectedCase(source_id=source_id, location="未知", project_type="更新",
+        relevance="推理", relevance_reason="推理", spatial_strategy=[], applicable_reference=[], limitations=[])
+    monkeypatch.setattr(case_research, "call_llm_structured", lambda *a, **k:
+        case_research._CaseSelection(selected_cases=[selected]))
+    with pytest.raises(LLMError, match="案例 source_id 不属于当前检索证据"):
+        case_research.research_cases(site, ["更新"], ["当前查询"])
+
+
+def test_source_id_mapping_preserves_exact_metadata_and_pairing(fake_llm, monkeypatch, search_hit):
+    second = {**search_hit, "title": "Shanghai&rsquo;s Waterfront (Phase I) [PDF]",
+              "url": "https://example.com/full/path.pdf?phase=1#page=2"}
+    monkeypatch.setattr(case_research, "web_search", lambda query: [search_hit, second])
+    result = case_research.research_cases(site_data(), ["更新"], ["当前查询"])
+    assert [(item["name"], item["source"]) for item in result["filtered_cases"]] == [
+        (item["title"], item["url"]) for item in (search_hit, second)]
+    assert [item["case"] for item in result["case_analysis"]] == [search_hit["title"], second["title"]]
+    assert "source_id" not in str(result)
+    fields = case_research._SelectedCase.model_fields
+    assert not {"name", "source", "title", "url", "case"} & fields.keys()
+    selected = case_research._SelectedCase(source_id="src_001", location="未知", project_type="更新",
+        relevance="推理", relevance_reason="推理", spatial_strategy=[], applicable_reference=[], limitations=[])
+    for forbidden in ("name", "source", "title", "url", "case"):
+        with pytest.raises(ValidationError):
+            case_research._SelectedCase.model_validate({**selected.model_dump(), forbidden: "rewritten"})
+
+
+def test_duplicate_source_id_keeps_existing_duplicate_guard(fake_llm, monkeypatch, search_hit):
+    site = site_data()
+    monkeypatch.setattr(case_research, "web_search", lambda query: [search_hit])
+    selected = case_research._SelectedCase(source_id="src_001", location="未知", project_type="更新",
+        relevance="推理", relevance_reason="推理", spatial_strategy=[], applicable_reference=[], limitations=[])
+    monkeypatch.setattr(case_research, "call_llm_structured", lambda *a, **k:
+        case_research._CaseSelection(selected_cases=[selected, selected]))
+    with pytest.raises(LLMError, match="^案例标识重复，无法可靠对应分析$"):
+        case_research.research_cases(site, ["更新"], ["当前查询"])

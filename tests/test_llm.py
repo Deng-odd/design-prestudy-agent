@@ -236,7 +236,10 @@ def test_llm_retry_does_not_increment_case_business_counter(sdk, monkeypatch, se
     analysis = CaseAnalysis(case=case.name, relevance_reason="空间参考", spatial_strategy=["来源摘要空间连接"],
                             applicable_reference=["分析推理：节点联系"], limitations=["仅有摘要"])
     query_result = case_research._Queries(search_queries=["公共空间案例"])
-    analyzed = case_research._CaseResults(filtered_cases=[case], case_analysis=[analysis])
+    analyzed = case_research._CaseSelection(selected_cases=[case_research._SelectedCase(
+        source_id="src_001", location=case.location, project_type=case.project_type, relevance=case.relevance,
+        relevance_reason=analysis.relevance_reason, spatial_strategy=analysis.spatial_strategy,
+        applicable_reference=analysis.applicable_reference, limitations=analysis.limitations)])
     sdk[1].side_effect = [completion(query_result.model_dump_json()), provider_error("timeout"),
                           provider_error("timeout"), completion(analyzed.model_dump_json())]
     monkeypatch.setattr(case_research, "web_search", Mock(return_value=[search_hit]))

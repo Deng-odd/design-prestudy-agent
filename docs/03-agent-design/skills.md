@@ -1913,3 +1913,11 @@ skills.md
 > **Agent 决定“下一步做什么”，Node 负责“何时调用并如何更新状态”，Skill 定义“专业任务怎么完成”，Tool 提供“完成任务需要的外部能力”。**
 
 V1 不追求 Skill 数量，而优先保证核心能力边界清晰、输入输出稳定、职责不重叠，并能够支撑完整的项目前期研究闭环。
+
+
+### Case Research 内部来源绑定
+
+去重后的当前检索 evidence 按顺序分配 `src_001`、`src_002` 等 source_id。
+案例筛选/分析的内部结构只由 LLM 输出 source_id 与专业字段；程序从该 ID 对应的同一条 evidence 回填 Case.name、Case.source 与 CaseAnalysis.case。
+未知或空 ID 明确失败，不猜测、不模糊匹配。重复选择继续由已有重复案例 guard 拒绝。
+公开 Skill 返回、Case / CaseAnalysis Schema、State 与 exact provenance guard 保持不变；source_id 不进入业务 State。
